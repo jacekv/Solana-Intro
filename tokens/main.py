@@ -16,7 +16,7 @@ from solana.system_program import create_nonce_account, CreateNonceAccountParams
 
 from spl.token.client import Token
 from spl.token.constants import TOKEN_PROGRAM_ID
-from spl.token.instructions import mint_to, MintToParams
+from spl.token.instructions import mint_to, MintToParams, transfer, TransferParams
 
 LAMPORTS_PER_SOL = 1000_000_000
 
@@ -271,7 +271,7 @@ if __name__ == '__main__':
 
     nonce_account_info = client.get_account_info(nonce_keypair.public_key)['result']['value']
     nonce_account_data = from_nonce_account_data(nonce_account_info['data'][0])
-    
+
     nonce_advance_instruction = nonce_advance(AdvanceNonceParams(
         nonce_pubkey=nonce_keypair.public_key,
         authorized_pubkey=party_a.public_key,
@@ -319,5 +319,61 @@ if __name__ == '__main__':
     print('Waiting for transaction to be finalized...')
     client.confirm_transaction(tx_hash["result"])
     print('Done :)')
+
+    print('\nGreat :) Time to perform a transfer to offline multisig tx')
+
+
+    nonce_account_info = client.get_account_info(nonce_keypair.public_key)['result']['value']
+    nonce_account_data = from_nonce_account_data(nonce_account_info['data'][0])
+
+    nonce_advance_instruction = nonce_advance(AdvanceNonceParams(
+        nonce_pubkey=nonce_keypair.public_key,
+        authorized_pubkey=party_a.public_key,
+    ))
+
+    balance = token.get_balance(receiver_multisig_token_account)
+    print(f"{receiver_multisig_token_account} has {balance['result']['value']['amount']} tokens before transfer")
+
+    unsigned_tx_add_sign = Transaction(
+        fee_payer=party_a.public_key,
+        nonce_info=NonceInformation(
+            nonce=nonce_account_data['nonce'],
+            nonce_instruction=nonce_advance_instruction,
+        )
+    ).add(transfer(TransferParams(
+        amount=137,
+        dest=receiver_multisig_token_account,
+        owner=multisig_public_key,
+        program_id=token_multisig.program_id,
+        signers=[party_a.public_key, party_b.public_key, party_c.public_key],
+        source=multisig_account_pubkey,
+    )))
+
+    print('Serializing message in order to send to other parties to sign...')
+    #Weirdly, I have to call serialize_message twice to get it working o.O
+    unsigned_tx_add_sign.serialize_message()
+    serialized_transaction_message = unsigned_tx_add_sign.serialize_message()
+
+    print('Sending serialized tx to others...')
+    print('Parties are signing message')
+    signed_msg_a = party_a.sign(serialized_transaction_message)
+    signed_msg_b = party_b.sign(serialized_transaction_message)
+    signed_msg_c = party_c.sign(serialized_transaction_message)
+    
+
+    print('Sending siganture back and attaching to tx :)')
+    unsigned_tx_add_sign.add_signature(party_a.public_key, signed_msg_a.signature)
+    unsigned_tx_add_sign.add_signature(party_b.public_key, signed_msg_b.signature)
+    unsigned_tx_add_sign.add_signature(party_c.public_key, signed_msg_c.signature)
+
+    print('Verify:', unsigned_tx_add_sign.verify_signatures())
+    serialized_tx = unsigned_tx_add_sign.serialize()
+    tx_hash = client.send_raw_transaction(serialized_tx)
+    print('Waiting for transaction to be finalized...')
+    client.confirm_transaction(tx_hash["result"])
+    print('Done :)')
+
+    balance = token.get_balance(receiver_multisig_token_account)
+    print(f"{receiver_multisig_token_account} has {balance['result']['value']['amount']} tokens before transfer")
     
     
