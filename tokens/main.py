@@ -1,17 +1,32 @@
 import yaml
 import json
+import base64
+import borsh
 
+from borsh import types
 from os import path
 from solana.rpc.api import Client
+from solana.blockhash import Blockhash
 from solana.rpc.core import RPCException
 from solana.rpc.types import TxOpts
 from solana.keypair import Keypair
 from solana.publickey import PublicKey
+from solana.transaction import Transaction, NonceInformation
+from solana.system_program import create_nonce_account, CreateNonceAccountParams, nonce_advance, AdvanceNonceParams
 
 from spl.token.client import Token
 from spl.token.constants import TOKEN_PROGRAM_ID
+from spl.token.instructions import mint_to, MintToParams
 
 LAMPORTS_PER_SOL = 1000_000_000
+
+NONCE_ACCOUNT_SCHEMA =  borsh.schema({
+    'version': types.u32,
+    'state': types.u32,
+    'authorized_pubkey': types.fixed_array(types.u8, 32),
+    'nonce': types.fixed_array(types.u8, 32),
+    'fee_calculator': types.u64
+})
 
 def getConfig():
     config_path = path.normpath(path.join(path.expanduser('~'), '.config', 'solana', 'cli', 'config.yml'))
@@ -62,65 +77,92 @@ def establishConnection():
         print("Failed to establish connection to RPC server")
         sys.exit(1)
 
+def from_nonce_account_data(data):
+    """
+    Converts the data from a nonce account into a dict.
+    """
+    decoded_data = base64.b64decode(nonce_account_info["data"][0])
+    if len(decoded_data) != 80:
+        raise ValueError("Invalid nonce account data length. Length of 80 bytes expected")
+
+    decoded_data = base64.b64decode(nonce_account_info["data"][0])
+    nonce_account_data = {
+        'version': int.from_bytes(decoded_data[0:4], "little"),
+        'state': int.from_bytes(decoded_data[4:8], "little"),
+        'authorized_pubkey': PublicKey(decoded_data[8:40]),
+        'nonce': Blockhash(str(PublicKey(decoded_data[40:72]))),
+        'feeCalculator': {
+            'lamportsPerSignature': int.from_bytes(decoded_data[72:80], "little")
+        }
+    }
+
+    return nonce_account_data
+
+
 if __name__ == '__main__':
     establishConnection()
     payer = getPayer()
 
-    # print('Creating token program...')
-    # token = Token.create_mint(
-    #     conn=client,
-    #     payer=payer,
-    #     mint_authority=payer.public_key,
-    #     decimals=9,
-    #     program_id=TOKEN_PROGRAM_ID
-    # )
-    # print(f"Address of token program: {token.program_id}")
-    # print(f"Current supply: {token.get_mint_info().supply}")
+    print('Creating token program...')
+    token = Token.create_mint(
+        conn=client,
+        payer=payer,
+        mint_authority=payer.public_key,
+        decimals=9,
+        program_id=TOKEN_PROGRAM_ID
+    )
+    print(f"Address of token program: {token.program_id}")
+    print(f"Current supply: {token.get_mint_info().supply}")
 
-    # print("We are going to create an account in order to hold balance")
-    # payer_token_account = token.create_account(owner=payer.public_key)
-    # print(f"Address of account is {payer_token_account}")
+    print("We are going to create an account in order to hold balance")
+    payer_token_account = token.create_account(owner=payer.public_key)
+    print(f"Address of account is {payer_token_account}")
     
-    # print("Time to mint some tokens :) We are going to mint 1000 tokens")
-    # tx_hash = token.mint_to(
-    #     dest=payer_token_account,
-    #     mint_authority=payer,
-    #     amount=1000,
-    #     opts=TxOpts(skip_confirmation=False)
-    # )
+    print("Time to mint some tokens :) We are going to mint 1000 tokens")
+    tx_hash = token.mint_to(
+        dest=payer_token_account,
+        mint_authority=payer,
+        amount=1000,
+        opts=TxOpts(skip_confirmation=False)
+    )
     
-    # print(f"Current supply: {token.get_mint_info().supply}")
-    # balance = token.get_balance(payer_token_account)
-    # print(f"{payer.public_key} has {balance['result']['value']['amount']} tokens")
-    # print(f"uiAmountString {balance['result']['value']['uiAmountString']}")
+    print(f"Current supply: {token.get_mint_info().supply}")
+    balance = token.get_balance(payer_token_account)
+    print(f"{payer.public_key} has {balance['result']['value']['amount']} tokens")
+    print(f"uiAmountString {balance['result']['value']['uiAmountString']}")
 
-    # print("Time to transfer some tokens. We are going to transfer 100 tokens")
+    print("Time to transfer some tokens. We are going to transfer 100 tokens")
     receiver = Keypair()
-    # receiver_token_account = token.create_account(owner=receiver.public_key)
-    # print(f"Address of receivers account is {receiver_token_account}")
+    receiver_token_account = token.create_account(owner=receiver.public_key)
+    print(f"Address of receivers account is {receiver_token_account}")
 
-    # print("Transfering tokens...")
-    # tx_hash = token.transfer(
-    #     source=payer_token_account,
-    #     dest=receiver_token_account,
-    #     owner=payer,
-    #     amount=100,
-    #     opts=TxOpts(skip_confirmation=False)
-    # )
+    print("Transfering tokens...")
+    tx_hash = token.transfer(
+        source=payer_token_account,
+        dest=receiver_token_account,
+        owner=payer,
+        amount=100,
+        opts=TxOpts(skip_confirmation=False)
+    )
 
-    # print(f"Current supply: {token.get_mint_info().supply}")
-    # balance = token.get_balance(payer_token_account)
-    # print(f"{payer.public_key} has {balance['result']['value']['amount']} tokens")
-    # balance = token.get_balance(receiver_token_account)
-    # print(f"{receiver.public_key} has {balance['result']['value']['amount']} tokens")
+    print(f"Current supply: {token.get_mint_info().supply}")
+    balance = token.get_balance(payer_token_account)
+    print(f"{payer.public_key} has {balance['result']['value']['amount']} tokens")
+    balance = token.get_balance(receiver_token_account)
+    print(f"{receiver.public_key} has {balance['result']['value']['amount']} tokens")
 
-
+    print("\n\n")
     print("AWESOME, now some time for MULTISIG token")
     party_a = Keypair()
+    print(f"Party A: {party_a.public_key}")
     party_b = Keypair()
+    print(f"Party B: {party_b.public_key}")
     party_c = Keypair()
+    print(f"Party C: {party_c.public_key}")
     party_d = Keypair()
+    print(f"Party D: {party_d.public_key}")
     party_e = Keypair()
+    print(f"Party E: {party_e.public_key}")
 
     tx = client.request_airdrop(party_a.public_key, 2 * LAMPORTS_PER_SOL)
 
@@ -203,3 +245,79 @@ if __name__ == '__main__':
 
     balance = token_multisig.get_balance(receiver_multisig_token_account)
     print(f"Receivers token balance is {balance['result']['value']['amount']}")
+
+    print("\n\n")
+    print("Great, everybody just signed the txs.")
+    print("But in reality, the people don;t sit in front of the same computer")
+    print("Time for some offline multisig")
+
+    lamports_for_rent_exemption = client.get_minimum_balance_for_rent_exemption(80)['result']
+
+    nonce_keypair = Keypair()    
+    transaction = create_nonce_account(
+        CreateNonceAccountParams(
+            from_pubkey=party_a.public_key,
+            nonce_pubkey=nonce_keypair.public_key,
+            authorized_pubkey=party_a.public_key,
+            lamports=lamports_for_rent_exemption
+        )
+    )
+    
+    tx_hash = client.send_transaction(transaction, party_a, nonce_keypair)
+
+    print('Waiting for transaction to be finalized...')
+    client.confirm_transaction(tx_hash["result"])
+    print('Done :)')
+
+    nonce_account_info = client.get_account_info(nonce_keypair.public_key)['result']['value']
+    nonce_account_data = from_nonce_account_data(nonce_account_info['data'][0])
+    
+    nonce_advance_instruction = nonce_advance(AdvanceNonceParams(
+        nonce_pubkey=nonce_keypair.public_key,
+        authorized_pubkey=party_a.public_key,
+    ))
+
+    unsigned_tx_add_sign = Transaction(
+        fee_payer=party_a.public_key,
+        nonce_info=NonceInformation(
+            nonce=nonce_account_data['nonce'],
+            nonce_instruction=nonce_advance_instruction,
+        )
+    ).add(mint_to(MintToParams(
+        amount=10000,
+        dest=multisig_account_pubkey,
+        mint=token_multisig.pubkey,
+        mint_authority=multisig_public_key,
+        program_id=token_multisig.program_id,
+        signers=[party_a.public_key, party_b.public_key, party_c.public_key, party_d.public_key, party_e.public_key]
+    )))
+
+    print('Serializing message in order to send to other parties to sign...')
+    #Weirdly, I have to call serialize_message twice to get it working o.O
+    unsigned_tx_add_sign.serialize_message()
+    serialized_transaction_message = unsigned_tx_add_sign.serialize_message()
+
+    print('Sending serialized tx to others...')
+    print('Parties are signing message')
+    signed_msg_a = party_a.sign(serialized_transaction_message)
+    signed_msg_b = party_b.sign(serialized_transaction_message)
+    signed_msg_c = party_c.sign(serialized_transaction_message)
+    signed_msg_d = party_d.sign(serialized_transaction_message)
+    signed_msg_e = party_e.sign(serialized_transaction_message)
+    
+
+    print('Sending siganture back and attaching to tx :)')
+    unsigned_tx_add_sign.add_signature(party_a.public_key, signed_msg_a.signature)
+    unsigned_tx_add_sign.add_signature(party_b.public_key, signed_msg_b.signature)
+    unsigned_tx_add_sign.add_signature(party_c.public_key, signed_msg_c.signature)
+    unsigned_tx_add_sign.add_signature(party_d.public_key, signed_msg_d.signature)
+    unsigned_tx_add_sign.add_signature(party_e.public_key, signed_msg_e.signature)
+
+    print('Verify:', unsigned_tx_add_sign.verify_signatures())
+    serialized_tx = unsigned_tx_add_sign.serialize()
+    tx_hash = client.send_raw_transaction(serialized_tx)
+    print('Waiting for transaction to be finalized...')
+    client.confirm_transaction(tx_hash["result"])
+    print('Done :)')
+    
+    
