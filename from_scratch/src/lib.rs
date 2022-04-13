@@ -46,7 +46,7 @@ use solana_program::{
 // unsigned(positive) 32-bit integer.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct GreetingAccount {
-    /// number of greetings
+    // number of greetings
     pub counter: u32,
 }
 
