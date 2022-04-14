@@ -1,5 +1,6 @@
 import yaml
 import borsh
+import base64
 
 from borsh import types
 from os import path
@@ -113,7 +114,9 @@ def init_escrow(
     temp_account_keypair: Keypair,
     token_program: Token,
     source_token_account: PublicKey,
-    receiving_token_account: PublicKey):
+    receiving_token_account: PublicKey,
+    amount_to_expect: int
+    ) -> Keypair:
     print("Time to initialize the escrow")
 
     # create empty account using the system program
@@ -152,7 +155,7 @@ def init_escrow(
     # next, we are going to transfer 100 tokens from the fee payer (alice) to the temp account
     transfer_to_temp_ix = transfer(
         TransferParams(
-            amount=100,
+            amount=amount_to_expect,
             dest=temp_account_keypair.public_key,
             owner=fee_payer.public_key,
             program_id=TOKEN_PROGRAM_ID,
@@ -180,7 +183,7 @@ def init_escrow(
 
     # last but not least, we have to build a transcation, in order to communicate with our escrow program!
     init_escrow_ix = TransactionInstruction(
-        data=bytes(1) + (10).to_bytes(8, byteorder='little'),
+        data=bytes(1) + (amount_to_expect).to_bytes(8, byteorder='little'),
         keys=[
             AccountMeta(pubkey=fee_payer.public_key, is_signer=True, is_writable=False),
             AccountMeta(pubkey=temp_account_keypair.public_key, is_signer=False, is_writable=True),
@@ -203,6 +206,59 @@ def init_escrow(
     tx_hash = client.send_transaction(transaction, fee_payer, temp_account_keypair, escrow_account_keypair)
     client.confirm_transaction(tx_hash['result'])
 
+    return escrow_account_keypair
+
+def take_trade(
+    escrow_state: dict,
+    fee_payer: Keypair,
+    trade_in_token_account: PublicKey,
+    receiving_token_account: PublicKey,
+    escrow_account: PublicKey,
+    ):
+    pda_account = PublicKey.find_program_address([bytes("escrow", encoding="utf8")], ESCROW_PROGRAM_ID)
+    # 0. `[signer]` The account of the person taking the trade
+    # 1. `[writable]` The taker's token account for the token they send 
+    # 2. `[writable]` The taker's token account for the token they will receive should the trade go through
+    # 3. `[writable]` The PDA's temp token account to get tokens from and eventually close
+    # 4. `[writable]` The initializer's main account to send their rent fees to
+    # 5. `[writable]` The initializer's token account that will receive tokens
+    # 6. `[writable]` The escrow account holding the escrow info
+    # 7. `[]` The token program
+    # 8. `[]` The PDA account
+    exchange_escrow_ix = TransactionInstruction(
+        data=(1).to_bytes(1, byteorder='little') + (escrow_state['expected_amount']).to_bytes(8, byteorder='little'),
+        keys=[
+            AccountMeta(pubkey=fee_payer.public_key, is_signer=True, is_writable=False),
+            AccountMeta(pubkey=trade_in_token_account, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=receiving_token_account, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=escrow_state['temp_token_account_pubkey'], is_signer=False, is_writable=True),
+            AccountMeta(pubkey=escrow_state['initializer_pubkey'], is_signer=False, is_writable=True),
+            AccountMeta(pubkey=escrow_state['initializer_token_to_receive_account_pubkey'], is_signer=False, is_writable=True),
+            AccountMeta(pubkey=escrow_account, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
+            AccountMeta(pubkey=pda_account[0], is_signer=False, is_writable=False),
+        ],
+        program_id=ESCROW_PROGRAM_ID,
+    )
+
+    transaction = Transaction()
+    transaction.add(exchange_escrow_ix)
+
+    tx_hash = client.send_transaction(transaction, fee_payer)
+    client.confirm_transaction(tx_hash['result'])
+
+
+def decode_escrow_state(data):
+    escrow_state = borsh.deserialize(
+        ESCROW_ACCOUNT_SCHEMA,
+        base64.b64decode(data["data"][0])
+    )
+    escrow_state['is_initialized'] = True if escrow_state['is_initialized'] != 0 else False
+    escrow_state['initializer_pubkey'] = PublicKey(escrow_state['initializer_pubkey'])
+    escrow_state['temp_token_account_pubkey'] = PublicKey(escrow_state['temp_token_account_pubkey'])
+    escrow_state['initializer_token_to_receive_account_pubkey'] = PublicKey(escrow_state['initializer_token_to_receive_account_pubkey'])
+    return escrow_state
+
 
 if __name__ == "__main__":
     establishConnection()
@@ -216,15 +272,48 @@ if __name__ == "__main__":
     x_token = create_token_program(alice, decimal=9)
     alice_x_token_account = create_token_account(x_token, alice.public_key)
     mint_token(x_token, alice, alice_x_token_account, 1000)
+    bob_x_token_account = create_token_account(x_token, bob.public_key)
 
     print()
     y_token = create_token_program(alice, decimal=9)
     alice_y_token_account = create_token_account(y_token, alice.public_key)
+    bob_y_token_account = create_token_account(y_token, bob.public_key)
+    mint_token(y_token, alice, bob_y_token_account, 1000)
 
-    init_escrow(
+    escrow_account_keypair = init_escrow(
         alice,
         temp_token_account,
         x_token,
         alice_x_token_account,
-        alice_y_token_account
+        alice_y_token_account,
+        100
     )
+
+    print('Sending escrow account pubkey to Bob, so he can check out the escrow state')
+    escrow_account_pubkey = escrow_account_keypair.public_key
+
+    account_info = client.get_account_info(escrow_account_pubkey)['result']['value']
+    escrow_state = decode_escrow_state(data=account_info)
+
+    print("State of escrow: ", escrow_state)
+
+    alice_x_token_balance = x_token.get_balance(alice_x_token_account)['result']['value']['amount']
+    bob_x_token_balance = x_token.get_balance(bob_x_token_account)['result']['value']['amount']
+    alice_y_token_balance = x_token.get_balance(alice_y_token_account)['result']['value']['amount']
+    bob_y_token_balance = x_token.get_balance(bob_y_token_account)['result']['value']['amount']
+    print(f"Alice's X token balance: {alice_x_token_balance}")
+    print(f"Bob's X token balance: {bob_x_token_balance}")
+    print(f"Alice's Y token balance: {alice_y_token_balance}")
+    print(f"Bob's Y token balance: {bob_y_token_balance}")
+
+    take_trade(escrow_state, bob, bob_y_token_account, bob_x_token_account, escrow_account_pubkey)
+
+    alice_x_token_balance = x_token.get_balance(alice_x_token_account)['result']['value']['amount']
+    bob_x_token_balance = x_token.get_balance(bob_x_token_account)['result']['value']['amount']
+    alice_y_token_balance = x_token.get_balance(alice_y_token_account)['result']['value']['amount']
+    bob_y_token_balance = x_token.get_balance(bob_y_token_account)['result']['value']['amount']
+    print(f"\nAlice's X token balance: {alice_x_token_balance}")
+    print(f"Bob's X token balance: {bob_x_token_balance}")
+    print(f"Alice's Y token balance: {alice_y_token_balance}")
+    print(f"Bob's Y token balance: {bob_y_token_balance}")
+    

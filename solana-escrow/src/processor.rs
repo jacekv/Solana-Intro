@@ -117,6 +117,8 @@ impl Processor {
         let (pda, bump_seed) = Pubkey::find_program_address(&[b"escrow"], program_id);
         
         // verifying that no fronrunning attack happened!
+        // msg!("amount_expected_by_taker {}", amount_expected_by_taker);
+        // msg!("pdas_temp_token_account_info.amount {}", pdas_temp_token_account_info.amount);
         if amount_expected_by_taker != pdas_temp_token_account_info.amount {
             return Err(EscrowError::ExpectedAmountMismatch.into());
         }
