@@ -245,7 +245,3 @@ if __name__ == "__main__":
 
     # get the data from the chain to see what's the status
     reportGreetings()
-
-#TODO: Update CreateAccountWithSeedParams in https://github.com/michaelhly/solana-py/blob/b507d4dfe16cdaccc754b1f2bac5ed9e258ea039/src/solana/system_program.py
-# it says in the docs that it takes a str as seed, but it is a dict {length: len(seed), chars: seed}
-# maybe we also can introduce the constant LAMPORTS_PER_SOL
