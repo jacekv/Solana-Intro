@@ -40,21 +40,21 @@ So, how to I ensure that the right program is calling my program?
 My program using the PDA has to include the following AccountMeta into the instruction:
 ```rust
 let ix = instruction::Instruction::new_with_bytes(
-    *calling_program.key,
-    &[0],
-    vec![
+    *calling_program.key, // program_id
+    &[0], // data
+    vec![ // accounts
         instruction::AccountMeta::new(pda, true),
     ],
 );
 invoke_signed(
     &ix,
     accounts,
-    &[&[b"checking_if_correct", &[bump_seed]]]
+    &[&[seed, &[bump_seed]]]
 );
 ```
 Whenever a different program tries to do the same thing, the transaction will fail with the following message: `Transaction simulation failed: Error processing Instruction 0: An account required by the instruction is missing`
 
-The first program should include also some test: Is the PDA account owned by the my other program?
+The first program should include also some test: Is the PDA account owned by my other program?
 Did the PDA sign the tx?
 
 That should do the trick :D
